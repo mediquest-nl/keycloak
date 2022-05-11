@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Red Hat, Inc. and/or its affiliates
+ * Copyright 2021 Red Hat, Inc. and/or its affiliates
  * and other contributors as indicated by the @author tags.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,30 +17,41 @@
 
 package org.keycloak.services.clientpolicy.condition;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.keycloak.component.ComponentModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.provider.ProviderConfigProperty;
 
+/**
+ * @author <a href="mailto:takashi.norimatsu.ws@hitachi.com">Takashi Norimatsu</a>
+ */
 public class ClientAccessTypeConditionFactory extends AbstractClientPolicyConditionProviderFactory {
 
-    public static final String PROVIDER_ID = "client-accesstype-condition";
+    public static final String PROVIDER_ID = "client-access-type";
+
     public static final String TYPE = "type";
+
     public static final String TYPE_CONFIDENTIAL = "confidential";
     public static final String TYPE_PUBLIC = "public";
     public static final String TYPE_BEARERONLY = "bearer-only";
 
-    private static final ProviderConfigProperty CLIENTACCESSTYPE_PROPERTY;
+    private static final List<ProviderConfigProperty> configProperties = new ArrayList<ProviderConfigProperty>();
+
     static {
-        CLIENTACCESSTYPE_PROPERTY = new ProviderConfigProperty(TYPE, "client-accesstype.label", "client-accesstype.tooltip", ProviderConfigProperty.MULTIVALUED_LIST_TYPE, TYPE_CONFIDENTIAL);
-        CLIENTACCESSTYPE_PROPERTY.setOptions(Arrays.asList(TYPE_CONFIDENTIAL, TYPE_PUBLIC, TYPE_BEARERONLY));
+        addCommonConfigProperties(configProperties);
+
+        ProviderConfigProperty property;
+        property = new ProviderConfigProperty(TYPE, "client-accesstype.label", "client-accesstype.tooltip", ProviderConfigProperty.MULTIVALUED_LIST_TYPE, TYPE_CONFIDENTIAL);
+        List<String> updateProfileValues = Arrays.asList(TYPE_CONFIDENTIAL, TYPE_PUBLIC, TYPE_BEARERONLY);
+        property.setOptions(updateProfileValues);
+        configProperties.add(property);
     }
 
     @Override
-    public ClientPolicyConditionProvider create(KeycloakSession session, ComponentModel model) {
-        return new ClientAccessTypeCondition(session, model);
+    public ClientPolicyConditionProvider create(KeycloakSession session) {
+        return new ClientAccessTypeCondition(session);
     }
 
     @Override
@@ -50,13 +61,11 @@ public class ClientAccessTypeConditionFactory extends AbstractClientPolicyCondit
 
     @Override
     public String getHelpText() {
-        return "It uses the client's access type (confidential, public, bearer-only) to determine whether the policy is applied.";
+        return "It uses the client's access type (confidential, public, bearer-only) to determine whether the policy is applied. Condition is checked during most of OpenID Connect requests (Authorization request, token requests, introspection endpoint request etc).";
     }
 
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
-        List<ProviderConfigProperty> l = super.getConfigProperties();
-        l.add(CLIENTACCESSTYPE_PROPERTY);
-        return l;
+        return configProperties;
     }
 }

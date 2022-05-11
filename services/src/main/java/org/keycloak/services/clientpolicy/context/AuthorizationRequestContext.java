@@ -19,11 +19,15 @@ package org.keycloak.services.clientpolicy.context;
 
 import javax.ws.rs.core.MultivaluedMap;
 
+import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 import org.keycloak.protocol.oidc.endpoints.request.AuthorizationEndpointRequest;
 import org.keycloak.protocol.oidc.utils.OIDCResponseType;
 import org.keycloak.services.clientpolicy.ClientPolicyContext;
 import org.keycloak.services.clientpolicy.ClientPolicyEvent;
 
+/**
+ * @author <a href="mailto:takashi.norimatsu.ws@hitachi.com">Takashi Norimatsu</a>
+ */
 public class AuthorizationRequestContext implements ClientPolicyContext {
 
     private final OIDCResponseType parsedResponseType;
@@ -60,5 +64,9 @@ public class AuthorizationRequestContext implements ClientPolicyContext {
  
     public MultivaluedMap<String, String> getRequestParameters() {
         return requestParameters;
+    }
+
+    public boolean isParRequest() {
+        return requestParameters.containsKey(OIDCLoginProtocol.REQUEST_URI_PARAM);
     }
 }

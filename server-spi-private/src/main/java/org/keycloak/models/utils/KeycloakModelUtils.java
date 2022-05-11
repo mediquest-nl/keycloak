@@ -17,16 +17,21 @@
 
 package org.keycloak.models.utils;
 
+import org.keycloak.Config;
+import org.keycloak.Config.Scope;
 import org.keycloak.broker.social.SocialIdentityProvider;
 import org.keycloak.broker.social.SocialIdentityProviderFactory;
 import org.keycloak.common.util.CertificateUtils;
 import org.keycloak.common.util.KeyUtils;
 import org.keycloak.common.util.PemUtils;
+import org.keycloak.common.util.SecretGenerator;
+import org.keycloak.common.util.Time;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.models.AuthenticationExecutionModel;
 import org.keycloak.models.AuthenticationFlowModel;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.ClientScopeModel;
+import org.keycloak.models.ClientSecretConstants;
 import org.keycloak.models.Constants;
 import org.keycloak.models.GroupModel;
 import org.keycloak.models.IdentityProviderModel;
@@ -38,7 +43,6 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.RealmProvider;
 import org.keycloak.models.RoleModel;
 import org.keycloak.models.ScopeContainerModel;
-import org.keycloak.models.UserCredentialModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.representations.idm.CertificateRepresentation;
 import org.keycloak.storage.UserStorageProviderModel;
@@ -52,7 +56,6 @@ import java.security.Key;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
-import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Collection;
 import java.util.HashSet;
@@ -64,6 +67,10 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.keycloak.models.AccountRoles;
+import org.keycloak.provider.Provider;
+import org.keycloak.provider.ProviderFactory;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /**
  * Set of helper methods, which are useful in various model implementations.
@@ -77,16 +84,6 @@ public final class KeycloakModelUtils {
 
     public static String generateId() {
         return UUID.randomUUID().toString();
-    }
-
-    public static byte[] generateSecret() {
-        return generateSecret(32);
-    }
-
-    public static byte[] generateSecret(int bytes) {
-        byte[] buf = new byte[bytes];
-        new SecureRandom().nextBytes(buf);
-        return buf;
     }
 
     public static PublicKey getPublicKey(String publicKeyPem) {
@@ -150,9 +147,10 @@ public final class KeycloakModelUtils {
         return rep;
     }
 
-    public static UserCredentialModel generateSecret(ClientModel client) {
-        UserCredentialModel secret = UserCredentialModel.generateSecret();
-        client.setSecret(secret.getChallengeResponse());
+    public static String generateSecret(ClientModel client) {
+        String secret = SecretGenerator.getInstance().randomString();
+        client.setSecret(secret);
+        client.setAttribute(ClientSecretConstants.CLIENT_SECRET_CREATION_TIME,String.valueOf(Time.currentTime()));
         return secret;
     }
 
@@ -269,36 +267,123 @@ public final class KeycloakModelUtils {
      * @param timeoutInSeconds
      */
     public static void runJobInTransactionWithTimeout(KeycloakSessionFactory factory, KeycloakSessionTask task, int timeoutInSeconds) {
-        JtaTransactionManagerLookup lookup = (JtaTransactionManagerLookup)factory.getProviderFactory(JtaTransactionManagerLookup.class);
         try {
-            if (lookup != null) {
-                if (lookup.getTransactionManager() != null) {
-                    try {
-                        lookup.getTransactionManager().setTransactionTimeout(timeoutInSeconds);
-                    } catch (SystemException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-
+            setTransactionLimit(factory, timeoutInSeconds);
             runJobInTransaction(factory, task);
-
         } finally {
-            if (lookup != null) {
-                if (lookup.getTransactionManager() != null) {
-                    try {
-                        // Reset to default transaction timeout
-                        lookup.getTransactionManager().setTransactionTimeout(0);
-                    } catch (SystemException e) {
-                        // Shouldn't happen for Wildfly transaction manager
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
+            setTransactionLimit(factory, 0);
         }
 
     }
 
+    public static void setTransactionLimit(KeycloakSessionFactory factory, int timeoutInSeconds) {
+        JtaTransactionManagerLookup lookup = (JtaTransactionManagerLookup) factory.getProviderFactory(JtaTransactionManagerLookup.class);
+        if (lookup != null) {
+            if (lookup.getTransactionManager() != null) {
+                try {
+                    // If timeout is set to 0, reset to default transaction timeout
+                    lookup.getTransactionManager().setTransactionTimeout(timeoutInSeconds);
+                } catch (SystemException e) {
+                    // Shouldn't happen for Wildfly transaction manager
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+    }
+
+    public static Function<KeycloakSessionFactory, ComponentModel> componentModelGetter(String realmId, String componentId) {
+        return factory -> getComponentModel(factory, realmId, componentId);
+    }
+
+    public static ComponentModel getComponentModel(KeycloakSessionFactory factory, String realmId, String componentId) {
+        AtomicReference<ComponentModel> cm = new AtomicReference<>();
+        KeycloakModelUtils.runJobInTransaction(factory, session -> {
+            RealmModel realm = session.realms().getRealm(realmId);
+            cm.set(realm == null ? null : realm.getComponent(componentId));
+        });
+        return cm.get();
+    }
+
+    public static <T extends Provider> ProviderFactory<T> getComponentFactory(KeycloakSessionFactory factory, Class<T> providerClass, Scope config, String spiName) {
+        String realmId = config.get("realmId");
+        String componentId = config.get("componentId");
+        if (realmId == null || componentId == null) {
+            realmId = "ROOT";
+            ComponentModel cm = new ScopeComponentModel(providerClass, config, spiName, realmId);
+            return factory.getProviderFactory(providerClass, realmId, cm.getId(), k -> cm);
+        } else {
+            return factory.getProviderFactory(providerClass, realmId, componentId, componentModelGetter(realmId, componentId));
+        }
+    }
+
+    private static class ScopeComponentModel extends ComponentModel {
+
+        private final String componentId;
+        private final String providerId;
+        private final String providerType;
+        private final String realmId;
+        private final Scope config;
+
+        public ScopeComponentModel(Class<?> providerClass, Scope baseConfiguration, String spiName, String realmId) {
+            final String pr = baseConfiguration.get("provider", Config.getProvider(spiName));
+
+            this.providerId = pr == null ? "default" : pr;
+            this.config = baseConfiguration.scope(this.providerId);
+            this.componentId = spiName + "- " + (realmId == null ? "" : "f:" + realmId + ":") + this.providerId;
+            this.realmId = realmId;
+            this.providerType = providerClass.getName();
+        }
+
+        @Override
+        public String getProviderType() {
+            return providerType;
+        }
+
+        @Override
+        public String getProviderId() {
+            return providerId;
+        }
+
+        @Override
+        public String getName() {
+            return componentId + "-config";
+        }
+
+        @Override
+        public String getId() {
+            return componentId;
+        }
+
+        @Override
+        public String getParentId() {
+            return realmId;
+        }
+
+        @Override
+        public boolean get(String key, boolean defaultValue) {
+            return config.getBoolean(key, defaultValue);
+        }
+
+        @Override
+        public long get(String key, long defaultValue) {
+            return config.getLong(key, defaultValue);
+        }
+
+        @Override
+        public int get(String key, int defaultValue) {
+            return config.getInt(key, defaultValue);
+        }
+
+        @Override
+        public String get(String key, String defaultValue) {
+            return config.get(key, defaultValue);
+        }
+
+        @Override
+        public String get(String key) {
+            return get(key, null);
+        }
+    }
 
     public static String getMasterRealmAdminApplicationClientId(String realmName) {
         return realmName + "-realm";
@@ -412,13 +497,13 @@ public final class KeycloakModelUtils {
 
     }
 
-    public static List<String>  resolveAttribute(GroupModel group, String name) {
-        List<String> values = group.getAttributeStream(name).collect(Collectors.toList());
-        if (!values.isEmpty()) return values;
-        if (group.getParentId() == null) return null;
-        return resolveAttribute(group.getParent(), name);
+    public static Collection<String> resolveAttribute(GroupModel group, String name, boolean aggregateAttrs) {
+        Set<String> values = group.getAttributeStream(name).collect(Collectors.toSet());
+        if ((values.isEmpty() || aggregateAttrs) && group.getParentId() != null) {
+            values.addAll(resolveAttribute(group.getParent(), name, aggregateAttrs));
+        }
+        return values;
     }
-
 
     public static Collection<String> resolveAttribute(UserModel user, String name, boolean aggregateAttrs) {
         List<String> values = user.getAttributeStream(name).collect(Collectors.toList());
@@ -429,13 +514,13 @@ public final class KeycloakModelUtils {
             }
             aggrValues.addAll(values);
         }
-        Stream<List<String>> attributes = user.getGroupsStream()
-                .map(group -> resolveAttribute(group, name))
+        Stream<Collection<String>> attributes = user.getGroupsStream()
+                .map(group -> resolveAttribute(group, name, aggregateAttrs))
                 .filter(Objects::nonNull)
                 .filter(attr -> !attr.isEmpty());
 
         if (!aggregateAttrs) {
-            Optional<List<String>> first = attributes.findFirst();
+            Optional<Collection<String>> first = attributes.findFirst();
             if (first.isPresent()) return first.get();
         } else {
             aggrValues.addAll(attributes.flatMap(Collection::stream).collect(Collectors.toSet()));
@@ -609,22 +694,12 @@ public final class KeycloakModelUtils {
                 Objects.equals(idp.getPostBrokerLoginFlowId(), model.getId()));
     }
 
-    public static boolean isClientScopeUsed(RealmModel realm, ClientScopeModel clientScope) {
-        return realm.getClientsStream()
-                .filter(c -> (c.getClientScopes(true, false).containsKey(clientScope.getName())) ||
-                (c.getClientScopes(false, false).containsKey(clientScope.getName())))
-                .findFirst().isPresent();
-    }
-
     public static ClientScopeModel getClientScopeByName(RealmModel realm, String clientScopeName) {
         return realm.getClientScopesStream()
                 .filter(clientScope -> Objects.equals(clientScopeName, clientScope.getName()))
                 .findFirst()
                 // check if we are referencing a client instead of a scope
-                .orElse(realm.getClientsStream()
-                        .filter(c -> Objects.equals(clientScopeName, c.getClientId()))
-                        .findFirst()
-                        .orElse(null));
+                .orElseGet(() -> realm.getClientByClientId(clientScopeName));
     }
 
     /**

@@ -18,7 +18,7 @@
 
 package org.keycloak.authorization.store.syncronization;
 
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,18 +50,19 @@ public class ClientApplicationSynchronizer implements Synchronizer<ClientRemoved
     private void removeFromClientPolicies(ClientRemovedEvent event, AuthorizationProvider authorizationProvider) {
         StoreFactory storeFactory = authorizationProvider.getStoreFactory();
         ResourceServerStore store = storeFactory.getResourceServerStore();
-        ResourceServer resourceServer = store.findById(event.getClient().getId());
+        ResourceServer resourceServer = store.findByClient(event.getClient());
 
         if (resourceServer != null) {
-            storeFactory.getResourceServerStore().delete(resourceServer.getId());
+            storeFactory.getResourceServerStore().delete(event.getClient());
         }
 
-        Map<String, String[]> attributes = new HashMap<>();
+        Map<Policy.FilterOption, String[]> attributes = new EnumMap<>(Policy.FilterOption.class);
 
-        attributes.put("type", new String[] {"client"});
-        attributes.put("config:clients", new String[] {event.getClient().getId()});
+        attributes.put(Policy.FilterOption.TYPE, new String[] {"client"});
+        attributes.put(Policy.FilterOption.CONFIG, new String[] {"clients", event.getClient().getId()});
+        attributes.put(Policy.FilterOption.ANY_OWNER, Policy.FilterOption.EMPTY_FILTER);
 
-        List<Policy> search = storeFactory.getPolicyStore().findByResourceServer(attributes, null, -1, -1);
+        List<Policy> search = storeFactory.getPolicyStore().findByResourceServer(null, attributes, null, null);
 
         for (Policy policy : search) {
             PolicyProviderFactory policyFactory = authorizationProvider.getProviderFactory(policy.getType());

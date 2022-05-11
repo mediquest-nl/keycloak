@@ -46,7 +46,6 @@ import org.keycloak.testsuite.arquillian.AuthServerTestEnricher;
 import org.keycloak.testsuite.arquillian.KcArquillian;
 import org.keycloak.testsuite.arquillian.SuiteContext;
 import org.keycloak.testsuite.arquillian.TestContext;
-import org.keycloak.testsuite.arquillian.annotation.DisableFeature;
 import org.keycloak.testsuite.auth.page.AuthRealm;
 import org.keycloak.testsuite.auth.page.AuthServer;
 import org.keycloak.testsuite.auth.page.AuthServerContextRoot;
@@ -82,9 +81,9 @@ import java.util.Scanner;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
 import static org.keycloak.testsuite.admin.Users.setPasswordFor;
 import static org.keycloak.testsuite.util.ServerURLs.AUTH_SERVER_HOST;
 import static org.keycloak.testsuite.util.ServerURLs.AUTH_SERVER_PORT;
@@ -189,15 +188,32 @@ public abstract class AbstractKeycloakTest {
         adminClient = testContext.getAdminClient();
     }
 
+    /**
+     * Executed before test realms import
+     * <p>
+     * In @Before block
+     */
     protected void beforeAbstractKeycloakTestRealmImport() throws Exception {
     }
-    protected void postAfterAbstractKeycloak() {
+
+    /**
+     * Executed after test realms import
+     * <p>
+     * In @Before block
+     */
+    protected void afterAbstractKeycloakTestRealmImport() {
     }
 
-    protected void afterAbstractKeycloakTestRealmImport() {}
+    /**
+     * Executed as the last task of each test case
+     * <p>
+     * In @After block
+     */
+    protected void postAfterAbstractKeycloak() throws Exception {
+    }
 
     @After
-    public void afterAbstractKeycloakTest() {
+    public void afterAbstractKeycloakTest() throws Exception {
         if (resetTimeOffset) {
             resetTimeOffset();
         }
@@ -689,5 +705,15 @@ public abstract class AbstractKeycloakTest {
             }
         }
         return in;
+    }
+
+    /**
+     * Get product/project name
+     *
+     * @return f.e. 'RH-SSO' or 'Keycloak'
+     */
+    protected String getProjectName() {
+        final boolean isProduct = adminClient.serverInfo().getInfo().getProfileInfo().getName().equals("product");
+        return isProduct ? Profile.PRODUCT_NAME : Profile.PROJECT_NAME;
     }
 }

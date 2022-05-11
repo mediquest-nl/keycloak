@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,7 @@ import org.keycloak.authorization.AuthorizationProvider;
 import org.keycloak.authorization.model.PermissionTicket;
 import org.keycloak.authorization.model.Policy;
 import org.keycloak.authorization.model.Resource;
+import org.keycloak.authorization.model.ResourceServer;
 import org.keycloak.authorization.model.Scope;
 import org.keycloak.authorization.store.PermissionTicketStore;
 import org.keycloak.common.util.Time;
@@ -67,7 +69,7 @@ public class AuthorizationBean {
         List<String> pathParameters = uriInfo.getPathParameters().get("resource_id");
 
         if (pathParameters != null && !pathParameters.isEmpty()) {
-            Resource resource = authorization.getStoreFactory().getResourceStore().findById(pathParameters.get(0), null);
+            Resource resource = authorization.getStoreFactory().getResourceStore().findById(null, pathParameters.get(0));
 
             if (resource != null && !resource.getOwner().equals(user.getId())) {
                 throw new RuntimeException("User [" + user.getUsername() + "] can not access resource [" + resource.getId() + "]");
@@ -77,10 +79,10 @@ public class AuthorizationBean {
 
     public Collection<ResourceBean> getResourcesWaitingOthersApproval() {
         if (resourcesWaitingOthersApproval == null) {
-            HashMap<String, String> filters = new HashMap<>();
+            Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-            filters.put(PermissionTicket.REQUESTER, user.getId());
-            filters.put(PermissionTicket.GRANTED, Boolean.FALSE.toString());
+            filters.put(PermissionTicket.FilterOption.REQUESTER, user.getId());
+            filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.FALSE.toString());
 
             resourcesWaitingOthersApproval = toResourceRepresentation(findPermissions(filters));
         }
@@ -90,10 +92,10 @@ public class AuthorizationBean {
 
     public Collection<ResourceBean> getResourcesWaitingApproval() {
         if (requestsWaitingPermission == null) {
-            HashMap<String, String> filters = new HashMap<>();
+            Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-            filters.put(PermissionTicket.OWNER, user.getId());
-            filters.put(PermissionTicket.GRANTED, Boolean.FALSE.toString());
+            filters.put(PermissionTicket.FilterOption.OWNER, user.getId());
+            filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.FALSE.toString());
 
             requestsWaitingPermission = toResourceRepresentation(findPermissions(filters));
         }
@@ -103,7 +105,7 @@ public class AuthorizationBean {
 
     public List<ResourceBean> getResources() {
         if (resources == null) {
-            resources = authorization.getStoreFactory().getResourceStore().findByOwner(user.getId(), null).stream()
+            resources = authorization.getStoreFactory().getResourceStore().findByOwner(null, user.getId()).stream()
                     .filter(Resource::isOwnerManagedAccess)
                     .map(ResourceBean::new)
                     .collect(Collectors.toList());
@@ -113,14 +115,14 @@ public class AuthorizationBean {
 
     public Collection<ResourceBean> getSharedResources() {
         if (userSharedResources == null) {
-            HashMap<String, String> filters = new HashMap<>();
+            Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-            filters.put(PermissionTicket.REQUESTER, user.getId());
-            filters.put(PermissionTicket.GRANTED, Boolean.TRUE.toString());
+            filters.put(PermissionTicket.FilterOption.REQUESTER, user.getId());
+            filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.TRUE.toString());
 
             PermissionTicketStore ticketStore = authorization.getStoreFactory().getPermissionTicketStore();
 
-            userSharedResources = toResourceRepresentation(ticketStore.find(filters, null, -1, -1));
+            userSharedResources = toResourceRepresentation(ticketStore.find(null, filters, null, null));
         }
         return userSharedResources;
     }
@@ -138,7 +140,7 @@ public class AuthorizationBean {
     }
 
     private ResourceBean getResource(String id) {
-        return new ResourceBean(authorization.getStoreFactory().getResourceStore().findById(id, null));
+        return new ResourceBean(authorization.getStoreFactory().getResourceStore().findById(null, id));
     }
 
     public static class RequesterBean {
@@ -234,7 +236,8 @@ public class AuthorizationBean {
 
         public ResourceBean(Resource resource) {
             RealmModel realm = authorization.getRealm();
-            resourceServer = new ResourceServerBean(realm.getClientById(resource.getResourceServer()));
+            ResourceServer resourceServerModel = resource.getResourceServer();
+            resourceServer = new ResourceServerBean(realm.getClientById(resourceServerModel.getClientId()), resourceServerModel);
             this.resource = resource;
             userOwner = authorization.getKeycloakSession().users().getUserById(realm, resource.getOwner());
             if (userOwner == null) {
@@ -281,10 +284,10 @@ public class AuthorizationBean {
 
         public Collection<RequesterBean> getShares() {
             if (shares == null) {
-                Map<String, String> filters = new HashMap<>();
+                Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-                filters.put(PermissionTicket.RESOURCE, this.resource.getId());
-                filters.put(PermissionTicket.GRANTED, Boolean.TRUE.toString());
+                filters.put(PermissionTicket.FilterOption.RESOURCE_ID, this.resource.getId());
+                filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.TRUE.toString());
 
                 shares = toPermissionRepresentation(findPermissions(filters));
             }
@@ -293,17 +296,17 @@ public class AuthorizationBean {
         }
 
         public Collection<ManagedPermissionBean> getPolicies() {
-            Map<String, String[]> filters = new HashMap<>();
+            Map<Policy.FilterOption, String[]> filters = new EnumMap<>(Policy.FilterOption.class);
 
-            filters.put("type", new String[] {"uma"});
-            filters.put("resource", new String[] {this.resource.getId()});
+            filters.put(Policy.FilterOption.TYPE, new String[] {"uma"});
+            filters.put(Policy.FilterOption.RESOURCE_ID, new String[] {this.resource.getId()});
             if (getUserOwner() != null) {
-                filters.put("owner", new String[] {getUserOwner().getId()});
+                filters.put(Policy.FilterOption.OWNER, new String[] {getUserOwner().getId()});
             } else {
-                filters.put("owner", new String[] {getClientOwner().getId()});
+                filters.put(Policy.FilterOption.OWNER, new String[] {getClientOwner().getId()});
             }
 
-            List<Policy> policies = authorization.getStoreFactory().getPolicyStore().findByResourceServer(filters, getResourceServer().getId(), -1, -1);
+            List<Policy> policies = authorization.getStoreFactory().getPolicyStore().findByResourceServer(getResourceServer().getResourceServerModel(), filters, null, null);
 
             if (policies.isEmpty()) {
                 return Collections.emptyList();
@@ -311,11 +314,11 @@ public class AuthorizationBean {
 
             return policies.stream()
                     .filter(policy -> {
-                        Map<String, String> filters1 = new HashMap<>();
+                        Map<PermissionTicket.FilterOption, String> filters1 = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-                        filters1.put(PermissionTicket.POLICY, policy.getId());
+                        filters1.put(PermissionTicket.FilterOption.POLICY_ID, policy.getId());
 
-                        return authorization.getStoreFactory().getPermissionTicketStore().find(filters1, resourceServer.getId(), -1, 1)
+                        return authorization.getStoreFactory().getPermissionTicketStore().find(resourceServer.getResourceServerModel(), filters1, -1, 1)
                                 .isEmpty();
                     })
                     .map(ManagedPermissionBean::new).collect(Collectors.toList());
@@ -366,20 +369,22 @@ public class AuthorizationBean {
         return requests.values();
     }
 
-    private List<PermissionTicket> findPermissions(Map<String, String> filters) {
-        return authorization.getStoreFactory().getPermissionTicketStore().find(filters, null, -1, -1);
+    private List<PermissionTicket> findPermissions(Map<PermissionTicket.FilterOption, String> filters) {
+        return authorization.getStoreFactory().getPermissionTicketStore().find(null, filters, null, null);
     }
 
     public class ResourceServerBean {
 
         private ClientModel clientModel;
+        private ResourceServer resourceServer;
 
-        public ResourceServerBean(ClientModel clientModel) {
+        public ResourceServerBean(ClientModel clientModel, ResourceServer resourceServer) {
             this.clientModel = clientModel;
+            this.resourceServer = resourceServer;
         }
 
         public String getId() {
-            return clientModel.getId();
+            return resourceServer.getId();
         }
 
         public String getName() {
@@ -408,6 +413,10 @@ public class AuthorizationBean {
 
         public String getBaseUri() {
             return ResolveRelative.resolveRelativeUri(session, clientModel.getRootUrl(), clientModel.getBaseUrl());
+        }
+
+        public ResourceServer getResourceServerModel() {
+            return resourceServer;
         }
     }
 

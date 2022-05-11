@@ -24,6 +24,8 @@ public class Messages {
     public static final String DISPLAY_UNSUPPORTED = "displayUnsupported";
     public static final String LOGIN_TIMEOUT = "loginTimeout";
 
+    public static final String REAUTHENTICATE = "reauthenticate";
+
     public static final String INVALID_USER = "invalidUserMessage";
 
     public static final String INVALID_USERNAME = "invalidUsernameMessage";
@@ -62,6 +64,8 @@ public class Messages {
 
     public static final String MISSING_TOTP_DEVICE_NAME = "missingTotpDeviceNameMessage";
 
+    public static final String COOKIE_NOT_FOUND = "cookieNotFoundMessage";
+
     public static final String NOTMATCH_PASSWORD = "notMatchPasswordMessage";
 
     public static final String INVALID_PASSWORD_EXISTING = "invalidPasswordExistingMessage";
@@ -87,6 +91,8 @@ public class Messages {
     public static final String NESTED_FIRST_BROKER_FLOW_MESSAGE = "nestedFirstBrokerFlowMessage";
 
     public static final String CONFIGURE_TOTP = "configureTotpMessage";
+
+    public static final String CONFIGURE_BACKUP_CODES = "configureBackupCodesMessage";
 
     public static final String UPDATE_PROFILE = "updateProfileMessage";
 
@@ -227,6 +233,10 @@ public class Messages {
 
     public static final String IDENTITY_PROVIDER_LOGIN_FAILURE = "identityProviderLoginFailure";
 
+    public static final String INSUFFICIENT_LEVEL_OF_AUTHENTICATION = "insufficientLevelOfAuthentication";
+
+    public static final String SUCCESS_LOGOUT = "successLogout";
+
     public static final String FAILED_LOGOUT = "failedLogout";
 
     public static final String CONSENT_DENIED="consentDenied";
@@ -237,6 +247,8 @@ public class Messages {
 
     public static final String BROKER_LINKING_SESSION_EXPIRED = "brokerLinkingSessionExpired";
 
+    public static final String ACR_NOT_FULFILLED = "acrNotFulfilled";
+
     public static final String PAGE_NOT_FOUND = "pageNotFound";
 
     public static final String INTERNAL_SERVER_ERROR = "internalServerError";
@@ -245,6 +257,9 @@ public class Messages {
     public static final String DELEGATION_COMPLETE_HEADER = "delegationCompleteHeader";
     public static final String DELEGATION_FAILED = "delegationFailedMessage";
     public static final String DELEGATION_FAILED_HEADER = "delegationFailedHeader";
+
+    public static final String ARTIFACT_RESOLUTION_SERVICE_ERROR = "artifactResolutionServiceError";
+    public static final String ARTIFACT_RESOLUTION_SERVICE_INVALID_RESPONSE = "saml.artifactResolutionServiceInvalidResponse";
 
     // WebAuthn
     public static final String WEBAUTHN_REGISTER_TITLE = "webauthn-registration-title";
@@ -259,6 +274,9 @@ public class Messages {
     public static final String WEBAUTHN_ERROR_REGISTER_VERIFICATION = "webauthn-error-register-verification";
     public static final String WEBAUTHN_ERROR_USER_NOT_FOUND = "webauthn-error-user-not-found";
 
+    // Conditions in Conditional Flow
+    public static final String ACCESS_DENIED = "access-denied";
+
     public static final String DELETE_ACCOUNT_LACK_PRIVILEDGES = "deletingAccountForbidden";
     public static final String DELETE_ACCOUNT_ERROR = "errorDeletingAccount";
 
@@ -271,4 +289,5 @@ public class Messages {
     public static final String OAUTH2_DEVICE_VERIFICATION_FAILED = "oauth2DeviceVerificationFailedMessage";
     public static final String OAUTH2_DEVICE_VERIFICATION_FAILED_HEADER = "oauth2DeviceVerificationFailedHeader";
     public static final String OAUTH2_DEVICE_CONSENT_DENIED = "oauth2DeviceConsentDeniedMessage";
+
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Red Hat, Inc. and/or its affiliates
+ * Copyright 2021 Red Hat, Inc. and/or its affiliates
  * and other contributors as indicated by the @author tags.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,16 +17,28 @@
 
 package org.keycloak.services.clientpolicy.condition;
 
-import org.keycloak.component.ComponentModel;
-import org.keycloak.models.KeycloakSession;
+import java.util.ArrayList;
+import java.util.List;
 
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.provider.ProviderConfigProperty;
+
+/**
+ * @author <a href="mailto:takashi.norimatsu.ws@hitachi.com">Takashi Norimatsu</a>
+ */
 public class AnyClientConditionFactory extends AbstractClientPolicyConditionProviderFactory {
 
-    public static final String PROVIDER_ID = "anyclient-condition";
+    public static final String PROVIDER_ID = "any-client";
+
+    private static final List<ProviderConfigProperty> configProperties = new ArrayList<ProviderConfigProperty>();
+
+    static {
+        addCommonConfigProperties(configProperties);
+    }
 
     @Override
-    public ClientPolicyConditionProvider create(KeycloakSession session, ComponentModel model) {
-        return new AnyClientCondition(session, model);
+    public ClientPolicyConditionProvider create(KeycloakSession session) {
+        return new AnyClientCondition(session);
     }
 
     @Override
@@ -37,5 +49,11 @@ public class AnyClientConditionFactory extends AbstractClientPolicyConditionProv
     @Override
     public String getHelpText() {
         return "The condition is satisfied by any client on any event.";
+    }
+
+
+    @Override
+    public List<ProviderConfigProperty> getConfigProperties() {
+        return configProperties;
     }
 }

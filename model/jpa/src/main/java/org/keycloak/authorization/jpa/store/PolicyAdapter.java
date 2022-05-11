@@ -168,8 +168,9 @@ public class PolicyAdapter extends AbstractAuthorizationModel implements Policy,
     @Override
     public Set<Resource> getResources() {
         Set<Resource> set = new HashSet<>();
+        ResourceServer resourceServer = getResourceServer();
         for (ResourceEntity res : entity.getResources()) {
-            set.add(storeFactory.getResourceStore().findById(res.getId(), entity.getResourceServer().getId()));
+            set.add(storeFactory.getResourceStore().findById(resourceServer, res.getId()));
         }
         return Collections.unmodifiableSet(set);
     }
@@ -177,8 +178,9 @@ public class PolicyAdapter extends AbstractAuthorizationModel implements Policy,
     @Override
     public Set<Scope> getScopes() {
         Set<Scope> set = new HashSet<>();
+        ResourceServer resourceServer = getResourceServer();
         for (ScopeEntity res : entity.getScopes()) {
-            set.add(storeFactory.getScopeStore().findById(res.getId(), entity.getResourceServer().getId()));
+            set.add(storeFactory.getScopeStore().findById(resourceServer, res.getId()));
         }
         return Collections.unmodifiableSet(set);
     }
@@ -252,10 +254,5 @@ public class PolicyAdapter extends AbstractAuthorizationModel implements Policy,
         } else {
             return em.getReference(PolicyEntity.class, policy.getId());
         }
-    }
-
-    @Override
-    public boolean isFetched(String association) {
-        return em.getEntityManagerFactory().getPersistenceUnitUtil().isLoaded(entity, association);
     }
 }

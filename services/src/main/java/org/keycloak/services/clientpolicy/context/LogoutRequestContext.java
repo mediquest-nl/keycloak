@@ -17,17 +17,25 @@
 
 package org.keycloak.services.clientpolicy.context;
 
+import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
 
 import org.keycloak.services.clientpolicy.ClientPolicyContext;
 import org.keycloak.services.clientpolicy.ClientPolicyEvent;
 
+/**
+ * @author <a href="mailto:takashi.norimatsu.ws@hitachi.com">Takashi Norimatsu</a>
+ */
 public class LogoutRequestContext implements ClientPolicyContext {
 
     private final MultivaluedMap<String, String> params;
 
     public LogoutRequestContext(MultivaluedMap<String, String> params) {
         this.params = params;
+    }
+
+    public LogoutRequestContext() {
+        this(null);
     }
 
     @Override

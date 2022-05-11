@@ -17,6 +17,7 @@
 
 package org.keycloak.models.utils;
 
+import org.jboss.logging.Logger;
 import org.keycloak.authorization.AuthorizationProvider;
 import org.keycloak.authorization.model.PermissionTicket;
 import org.keycloak.authorization.model.Policy;
@@ -24,9 +25,11 @@ import org.keycloak.authorization.model.Resource;
 import org.keycloak.authorization.model.ResourceServer;
 import org.keycloak.authorization.model.Scope;
 import org.keycloak.authorization.policy.provider.PolicyProviderFactory;
+import org.keycloak.common.Profile;
 import org.keycloak.common.util.MultivaluedHashMap;
 import org.keycloak.common.util.Time;
 import org.keycloak.component.ComponentModel;
+import org.keycloak.credential.CredentialMetadata;
 import org.keycloak.credential.CredentialModel;
 import org.keycloak.events.Event;
 import org.keycloak.events.admin.AdminEvent;
@@ -34,17 +37,24 @@ import org.keycloak.events.admin.AuthDetails;
 import org.keycloak.models.*;
 import org.keycloak.models.credential.OTPCredentialModel;
 import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.representations.account.CredentialMetadataRepresentation;
 import org.keycloak.representations.idm.*;
 import org.keycloak.representations.idm.authorization.*;
 import org.keycloak.storage.StorageId;
+import org.keycloak.util.JsonSerialization;
+import org.keycloak.utils.StringUtil;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -93,8 +103,12 @@ public class ModelToRepresentation {
         REALM_EXCLUDED_ATTRIBUTES.add("webAuthnPolicyCreateTimeoutPasswordless");
         REALM_EXCLUDED_ATTRIBUTES.add("webAuthnPolicyAvoidSameAuthenticatorRegisterPasswordless");
         REALM_EXCLUDED_ATTRIBUTES.add("webAuthnPolicyAcceptableAaguidsPasswordless");
+
+        REALM_EXCLUDED_ATTRIBUTES.add(Constants.CLIENT_POLICIES);
+        REALM_EXCLUDED_ATTRIBUTES.add(Constants.CLIENT_PROFILES);
     }
 
+    private static final Logger LOG = Logger.getLogger(ModelToRepresentation.class);
 
     public static void buildGroupPath(StringBuilder sb, GroupModel group) {
         if (group.getParent() != null) {
@@ -139,7 +153,7 @@ public class ModelToRepresentation {
 
     public static Stream<GroupRepresentation> searchForGroupByName(RealmModel realm, boolean full, String search, Integer first, Integer max) {
         return realm.searchForGroupByNameStream(search, first, max)
-                .map(g -> toGroupHierarchy(g, full));
+                .map(g -> toGroupHierarchy(g, full, search));
     }
 
     public static Stream<GroupRepresentation> searchForGroupByName(UserModel user, boolean full, String search, Integer first, Integer max) {
@@ -168,11 +182,26 @@ public class ModelToRepresentation {
     }
 
     public static GroupRepresentation toGroupHierarchy(GroupModel group, boolean full) {
+        return toGroupHierarchy(group, full, null);
+    }
+
+    public static GroupRepresentation toGroupHierarchy(GroupModel group, boolean full, String search) {
         GroupRepresentation rep = toRepresentation(group, full);
         List<GroupRepresentation> subGroups = group.getSubGroupsStream()
-                .map(subGroup -> toGroupHierarchy(subGroup, full)).collect(Collectors.toList());
+                .filter(g -> groupMatchesSearchOrIsPathElement(g, search))
+                .map(subGroup -> toGroupHierarchy(subGroup, full, search)).collect(Collectors.toList());
         rep.setSubGroups(subGroups);
         return rep;
+    }
+
+    private static boolean groupMatchesSearchOrIsPathElement(GroupModel group, String search) {
+        if (StringUtil.isBlank(search)) {
+            return true;
+        }
+        if (group.getName().contains(search)) {
+            return true;
+        }
+        return group.getSubGroupsStream().findAny().isPresent();
     }
 
     public static UserRepresentation toRepresentation(KeycloakSession session, RealmModel realm, UserModel user) {
@@ -291,7 +320,17 @@ public class ModelToRepresentation {
         return rep;
     }
 
-    public static RealmRepresentation toRepresentation(RealmModel realm, boolean internal) {
+    public static RealmRepresentation toBriefRepresentation(RealmModel realm) {
+        RealmRepresentation rep = new RealmRepresentation();
+        rep.setId(realm.getId());
+        rep.setRealm(realm.getName());
+        rep.setDisplayName(realm.getDisplayName());
+        rep.setDisplayNameHtml(realm.getDisplayNameHtml());
+        rep.setEnabled(realm.isEnabled());
+        return rep;
+    }
+
+    public static RealmRepresentation toRepresentation(KeycloakSession session, RealmModel realm, boolean internal) {
         RealmRepresentation rep = new RealmRepresentation();
         rep.setId(realm.getId());
         rep.setRealm(realm.getName());
@@ -311,7 +350,11 @@ public class ModelToRepresentation {
         rep.setQuickLoginCheckMilliSeconds(realm.getQuickLoginCheckMilliSeconds());
         rep.setMaxDeltaTimeSeconds(realm.getMaxDeltaTimeSeconds());
         rep.setFailureFactor(realm.getFailureFactor());
-        rep.setUserManagedAccessAllowed(realm.isUserManagedAccessAllowed());
+        if (Profile.isFeatureEnabled(Profile.Feature.AUTHORIZATION)) {
+            rep.setUserManagedAccessAllowed(realm.isUserManagedAccessAllowed());
+        } else {
+            rep.setUserManagedAccessAllowed(false);
+        }
 
         rep.setEventsEnabled(realm.isEventsEnabled());
         if (realm.getEventsExpiration() != 0) {
@@ -396,6 +439,18 @@ public class ModelToRepresentation {
         rep.setWebAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister(webAuthnPolicy.isAvoidSameAuthenticatorRegister());
         rep.setWebAuthnPolicyPasswordlessAcceptableAaguids(webAuthnPolicy.getAcceptableAaguids());
 
+        CibaConfig cibaPolicy = realm.getCibaPolicy();
+        Map<String, String> attrMap = Optional.ofNullable(rep.getAttributes()).orElse(new HashMap<>());
+        attrMap.put(CibaConfig.CIBA_BACKCHANNEL_TOKEN_DELIVERY_MODE, cibaPolicy.getBackchannelTokenDeliveryMode());
+        attrMap.put(CibaConfig.CIBA_EXPIRES_IN, String.valueOf(cibaPolicy.getExpiresIn()));
+        attrMap.put(CibaConfig.CIBA_INTERVAL, String.valueOf(cibaPolicy.getPoolingInterval()));
+        attrMap.put(CibaConfig.CIBA_AUTH_REQUESTED_USER_HINT, cibaPolicy.getAuthRequestedUserHint());
+
+        ParConfig parPolicy = realm.getParPolicy();
+        attrMap.put(ParConfig.PAR_REQUEST_URI_LIFESPAN, String.valueOf(parPolicy.getRequestUriLifespan()));
+
+        rep.setAttributes(attrMap);
+
         if (realm.getBrowserFlow() != null) rep.setBrowserFlow(realm.getBrowserFlow().getAlias());
         if (realm.getRegistrationFlow() != null) rep.setRegistrationFlow(realm.getRegistrationFlow().getAlias());
         if (realm.getDirectGrantFlow() != null) rep.setDirectGrantFlow(realm.getDirectGrantFlow().getAlias());
@@ -435,7 +490,10 @@ public class ModelToRepresentation {
             exportGroups(realm, rep);
         }
 
-        rep.setAttributes(stripRealmAttributesIncludedAsFields(realm.getAttributes()));
+        session.clientPolicy().updateRealmRepresentationFromModel(realm, rep);
+
+        // Append realm attributes to representation
+        rep.getAttributes().putAll(stripRealmAttributesIncludedAsFields(realm.getAttributes()));
 
         if (!internal) {
             rep = StripSecretsUtils.strip(rep);
@@ -504,6 +562,25 @@ public class ModelToRepresentation {
         return rep;
     }
 
+    /**
+     * Handles exceptions that occur when transforming the model to a representation and will remove
+     * all null objects from the stream.
+     *
+     * Entities that have been removed from the store or where a lazy loading exception occurs will not show up
+     * in the output stream.
+     */
+    public static <M, R> Stream<R> filterValidRepresentations(Stream<M> models, Function<M, R> transformer) {
+        return models.map(m -> {
+                    try {
+                        return transformer.apply(m);
+                    } catch (ModelIllegalStateException e) {
+                        LOG.warn("unable to retrieve model information, skipping entity", e);
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull);
+    }
+
     public static CredentialRepresentation toRepresentation(UserCredentialModel cred) {
         CredentialRepresentation rep = new CredentialRepresentation();
         rep.setType(CredentialRepresentation.SECRET);
@@ -519,6 +596,28 @@ public class ModelToRepresentation {
         rep.setCreatedDate(cred.getCreatedDate());
         rep.setSecretData(cred.getSecretData());
         rep.setCredentialData(cred.getCredentialData());
+        return rep;
+    }
+
+    public static CredentialMetadataRepresentation toRepresentation(CredentialMetadata credentialMetadata) {
+        CredentialMetadataRepresentation rep = new CredentialMetadataRepresentation();
+
+        rep.setCredential(ModelToRepresentation.toRepresentation(credentialMetadata.getCredentialModel()));
+        try {
+            rep.setInfoMessage(credentialMetadata.getInfoMessage() == null ? null : JsonSerialization.writeValueAsString(credentialMetadata.getInfoMessage()));
+        } catch (IOException e) {
+            LOG.warn("unable to serialize model information, skipping info message", e);
+        }
+        try {
+            rep.setWarningMessageDescription(credentialMetadata.getWarningMessageDescription() == null ? null : JsonSerialization.writeValueAsString(credentialMetadata.getWarningMessageDescription()));
+        } catch (IOException e) {
+            LOG.warn("unable to serialize model information, skipping warning message desc", e);
+        }
+        try {
+            rep.setWarningMessageTitle(credentialMetadata.getWarningMessageTitle() == null ? null : JsonSerialization.writeValueAsString(credentialMetadata.getWarningMessageTitle()));
+        } catch (IOException e) {
+            LOG.warn("unable to serialize model information, skipping warning message title", e);
+        }
         return rep;
     }
 
@@ -592,8 +691,8 @@ public class ModelToRepresentation {
         rep.setNodeReRegistrationTimeout(clientModel.getNodeReRegistrationTimeout());
         rep.setClientAuthenticatorType(clientModel.getClientAuthenticatorType());
 
-        rep.setDefaultClientScopes(new LinkedList<>(clientModel.getClientScopes(true, false).keySet()));
-        rep.setOptionalClientScopes(new LinkedList<>(clientModel.getClientScopes(false, false).keySet()));
+        rep.setDefaultClientScopes(new LinkedList<>(clientModel.getClientScopes(true).keySet()));
+        rep.setOptionalClientScopes(new LinkedList<>(clientModel.getClientScopes(false).keySet()));
 
         Set<String> redirectUris = clientModel.getRedirectUris();
         if (redirectUris != null) {
@@ -614,11 +713,13 @@ public class ModelToRepresentation {
         if (!mappings.isEmpty())
             rep.setProtocolMappers(mappings);
 
-        AuthorizationProvider authorization = session.getProvider(AuthorizationProvider.class);
-        ResourceServer resourceServer = authorization.getStoreFactory().getResourceServerStore().findById(clientModel.getId());
+        if (Profile.isFeatureEnabled(Profile.Feature.AUTHORIZATION)) {
+            AuthorizationProvider authorization = session.getProvider(AuthorizationProvider.class);
+            ResourceServer resourceServer = authorization.getStoreFactory().getResourceServerStore().findByClient(clientModel);
 
-        if (resourceServer != null) {
-            rep.setAuthorizationServicesEnabled(true);
+            if (resourceServer != null) {
+                rep.setAuthorizationServicesEnabled(true);
+            }
         }
 
         return rep;
@@ -723,7 +824,7 @@ public class ModelToRepresentation {
             rep.setAuthenticatorConfig(config.getAlias());
         }
         rep.setAuthenticator(model.getAuthenticator());
-        rep.setAutheticatorFlow(model.isAuthenticatorFlow());
+        rep.setAuthenticatorFlow(model.isAuthenticatorFlow());
         if (model.getFlowId() != null) {
             AuthenticationFlowModel flow = realm.getAuthenticationFlowById(model.getFlowId());
             rep.setFlowAlias(flow.getAlias());
@@ -809,7 +910,7 @@ public class ModelToRepresentation {
         ResourceServerRepresentation server = new ResourceServerRepresentation();
 
         server.setId(model.getId());
-        server.setClientId(model.getId());
+        server.setClientId(model.getClientId());
         server.setName(client.getClientId());
         server.setAllowRemoteResourceManagement(model.isAllowRemoteResourceManagement());
         server.setPolicyEnforcementMode(model.getPolicyEnforcementMode());
@@ -852,8 +953,9 @@ public class ModelToRepresentation {
         representation.setLogic(policy.getLogic());
         
         if (allFields) {
-            representation.setResourcesData(policy.getResources().stream().map(
-                    resource -> toRepresentation(resource, resource.getResourceServer(), authorization, true)).collect(Collectors.toSet()));
+            representation.setResourcesData(policy.getResources().stream()
+                    .map(resource -> toRepresentation(resource, policy.getResourceServer(), authorization, true))
+                    .collect(Collectors.toSet()));
             representation.setScopesData(policy.getScopes().stream().map(
                     resource -> toRepresentation(resource)).collect(Collectors.toSet()));
         }
@@ -861,11 +963,11 @@ public class ModelToRepresentation {
         return representation;
     }
 
-    public static ResourceRepresentation toRepresentation(Resource model, String resourceServer, AuthorizationProvider authorization) {
+    public static ResourceRepresentation toRepresentation(Resource model, ResourceServer resourceServer, AuthorizationProvider authorization) {
         return toRepresentation(model, resourceServer, authorization, true);
     }
 
-    public static ResourceRepresentation toRepresentation(Resource model, String resourceServer, AuthorizationProvider authorization, Boolean deep) {
+    public static ResourceRepresentation toRepresentation(Resource model, ResourceServer resourceServer, AuthorizationProvider authorization, Boolean deep) {
         ResourceRepresentation resource = new ResourceRepresentation();
 
         resource.setId(model.getId());
@@ -883,8 +985,8 @@ public class ModelToRepresentation {
         KeycloakSession keycloakSession = authorization.getKeycloakSession();
         RealmModel realm = authorization.getRealm();
 
-        if (owner.getId().equals(resourceServer)) {
-            ClientModel clientModel = realm.getClientById(resourceServer);
+        if (owner.getId().equals(resourceServer.getClientId())) {
+            ClientModel clientModel = realm.getClientById(resourceServer.getClientId());
             owner.setName(clientModel.getClientId());
         } else {
             UserModel userModel = keycloakSession.users().getUserById(realm, owner.getId());

@@ -16,8 +16,6 @@
  */
 package org.keycloak.services.resources.account;
 
-import static org.keycloak.userprofile.profile.UserProfileContextFactory.forOldAccount;
-
 import org.jboss.logging.Logger;
 import org.keycloak.authorization.AuthorizationProvider;
 import org.keycloak.authorization.model.PermissionTicket;
@@ -27,6 +25,8 @@ import org.keycloak.authorization.model.ResourceServer;
 import org.keycloak.authorization.model.Scope;
 import org.keycloak.authorization.store.PermissionTicketStore;
 import org.keycloak.authorization.store.PolicyStore;
+import org.keycloak.authorization.store.ScopeStore;
+import org.keycloak.common.Profile;
 import org.keycloak.common.util.Base64Url;
 import org.keycloak.common.util.Time;
 import org.keycloak.common.util.UriUtils;
@@ -44,6 +44,7 @@ import org.keycloak.locale.LocaleUpdaterProvider;
 import org.keycloak.models.AccountRoles;
 import org.keycloak.models.AuthenticatedClientSessionModel;
 import org.keycloak.models.ClientModel;
+import org.keycloak.models.ClientSessionContext;
 import org.keycloak.models.FederatedIdentityModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.ModelException;
@@ -56,7 +57,9 @@ import org.keycloak.models.credential.OTPCredentialModel;
 import org.keycloak.models.credential.PasswordCredentialModel;
 import org.keycloak.models.utils.CredentialValidation;
 import org.keycloak.models.utils.FormMessage;
+import org.keycloak.protocol.oidc.TokenManager;
 import org.keycloak.protocol.oidc.utils.RedirectUtils;
+import org.keycloak.representations.IDToken;
 import org.keycloak.services.ErrorResponse;
 import org.keycloak.services.ForbiddenException;
 import org.keycloak.services.ServicesLogger;
@@ -66,17 +69,19 @@ import org.keycloak.services.managers.Auth;
 import org.keycloak.services.managers.AuthenticationManager;
 import org.keycloak.services.managers.AuthenticationSessionManager;
 import org.keycloak.services.managers.UserConsentManager;
-import org.keycloak.services.managers.UserSessionManager;
 import org.keycloak.services.messages.Messages;
 import org.keycloak.services.resources.AbstractSecuredLocalService;
 import org.keycloak.services.resources.RealmsResource;
+import org.keycloak.services.util.DefaultClientSessionContext;
 import org.keycloak.services.util.ResolveRelative;
 import org.keycloak.services.validation.Validation;
 import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.storage.ReadOnlyException;
+import org.keycloak.userprofile.UserProfileContext;
+import org.keycloak.userprofile.ValidationException;
 import org.keycloak.userprofile.UserProfile;
-import org.keycloak.userprofile.utils.UserUpdateHelper;
-import org.keycloak.userprofile.validation.UserProfileValidationResult;
+import org.keycloak.userprofile.UserProfileProvider;
+import org.keycloak.userprofile.EventAuditingAttributeChangeListener;
 import org.keycloak.util.JsonSerialization;
 import org.keycloak.utils.CredentialHelper;
 
@@ -102,7 +107,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -110,6 +115,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -145,6 +151,7 @@ public class AccountFormService extends AbstractSecuredLocalService {
     }
 
     public void init() {
+        session.getContext().setClient(client);
         eventStore = session.getProvider(EventStoreProvider.class);
 
         account = session.getProvider(AccountProvider.class).setRealm(realm).setUriInfo(session.getContext().getUri()).setHttpHeaders(headers);
@@ -181,9 +188,14 @@ public class AccountFormService extends AbstractSecuredLocalService {
             }
 
             account.setUser(auth.getUser());
+
+            ClientSessionContext clientSessionCtx = DefaultClientSessionContext.fromClientSessionScopeParameter(auth.getClientSession(), session);
+            IDToken idToken = new TokenManager().responseBuilder(realm, client, event, session, userSession, clientSessionCtx).accessToken(authResult.getToken()).generateIDToken().getIdToken();
+            idToken.issuedFor(client.getClientId());
+            account.setIdTokenHint(session.tokens().encodeAndEncrypt(idToken));
         }
 
-        account.setFeatures(realm.isIdentityFederationEnabled(), eventStore != null && realm.isEventsEnabled(), true, true);
+        account.setFeatures(realm.isIdentityFederationEnabled(), eventStore != null && realm.isEventsEnabled(), true, Profile.isFeatureEnabled(Profile.Feature.AUTHORIZATION));
     }
 
     public static UriBuilder accountServiceBaseUrl(UriInfo uriInfo) {
@@ -365,51 +377,32 @@ public class AccountFormService extends AbstractSecuredLocalService {
 
         UserModel user = auth.getUser();
 
-        String oldFirstName = user.getFirstName();
-        String oldLastName = user.getLastName();
-        String oldEmail = user.getEmail();
+        event.event(EventType.UPDATE_PROFILE).client(auth.getClient()).user(auth.getUser()).detail(Details.CONTEXT, UserProfileContext.ACCOUNT_OLD.name());
 
-        event.event(EventType.UPDATE_PROFILE).client(auth.getClient()).user(auth.getUser());
-
-        UserProfileValidationResult result = forOldAccount(user, formData, session).validate();
-        List<FormMessage> errors = Validation.getFormErrorsFromValidation(result);
-
-        if (!errors.isEmpty()) {
-            setReferrerOnPage();
-            Response.Status status = Status.OK;
-
-            if (result.hasFailureOfErrorType(Messages.READ_ONLY_USERNAME)) {
-                status = Response.Status.BAD_REQUEST;
-            } else if (result.hasFailureOfErrorType(Messages.EMAIL_EXISTS, Messages.USERNAME_EXISTS)) {
-                status = Response.Status.CONFLICT;
-            }
-
-            return account.setErrors(status, errors).setProfileFormData(formData).createResponse(AccountPages.ACCOUNT);
-        }
-
-        UserProfile updatedProfile = result.getProfile();
-        String newEmail = updatedProfile.getAttributes().getFirstAttribute(UserModel.EMAIL);
-        String newFirstName = updatedProfile.getAttributes().getFirstAttribute(UserModel.FIRST_NAME);
-        String newLastName = updatedProfile.getAttributes().getFirstAttribute(UserModel.LAST_NAME);
-
+        UserProfileProvider profileProvider = session.getProvider(UserProfileProvider.class);
+        UserProfile profile = profileProvider.create(UserProfileContext.ACCOUNT_OLD, formData, user);
 
         try {
             // backward compatibility with old account console where attributes are not removed if missing
-            UserUpdateHelper.updateAccountOldConsole(realm, user, updatedProfile);
+            profile.update(false, new EventAuditingAttributeChangeListener(profile, event));
+        } catch (ValidationException pve) {
+            List<FormMessage> errors = Validation.getFormErrorsFromValidation(pve.getErrors());
+
+            if (!errors.isEmpty()) {
+                setReferrerOnPage();
+                Response.Status status = Status.OK;
+
+                if (pve.hasError(Messages.READ_ONLY_USERNAME)) {
+                    status = Response.Status.BAD_REQUEST;
+                } else if (pve.hasError(Messages.EMAIL_EXISTS, Messages.USERNAME_EXISTS)) {
+                    status = Response.Status.CONFLICT;
+                }
+
+                return account.setErrors(status, errors).setProfileFormData(formData).createResponse(AccountPages.ACCOUNT);
+            }
         } catch (ReadOnlyException e) {
             setReferrerOnPage();
             return account.setError(Response.Status.BAD_REQUEST, Messages.READ_ONLY_USER).setProfileFormData(formData).createResponse(AccountPages.ACCOUNT);
-        }
-
-        if (result.hasAttributeChanged(UserModel.FIRST_NAME)) {
-            event.detail(Details.PREVIOUS_FIRST_NAME, oldFirstName).detail(Details.UPDATED_FIRST_NAME, newFirstName);
-        }
-        if (result.hasAttributeChanged(UserModel.LAST_NAME)) {
-            event.detail(Details.PREVIOUS_LAST_NAME, oldLastName).detail(Details.UPDATED_LAST_NAME, newLastName);
-        }
-        if (result.hasAttributeChanged(UserModel.EMAIL)) {
-            user.setEmailVerified(false);
-            event.detail(Details.PREVIOUS_EMAIL, oldEmail).detail(Details.UPDATED_EMAIL, newEmail);
         }
 
         event.success();
@@ -779,7 +772,7 @@ public class AccountFormService extends AbstractSecuredLocalService {
 
         AuthorizationProvider authorization = session.getProvider(AuthorizationProvider.class);
         PermissionTicketStore ticketStore = authorization.getStoreFactory().getPermissionTicketStore();
-        Resource resource = authorization.getStoreFactory().getResourceStore().findById(resourceId, null);
+        Resource resource = authorization.getStoreFactory().getResourceStore().findById(null, resourceId);
 
         if (resource == null) {
             return ErrorResponse.error("Invalid resource", Response.Status.BAD_REQUEST);
@@ -799,13 +792,14 @@ public class AccountFormService extends AbstractSecuredLocalService {
             List<String> ids = new ArrayList<>(Arrays.asList(permissionId));
             Iterator<String> iterator = ids.iterator();
             PolicyStore policyStore = authorization.getStoreFactory().getPolicyStore();
+            ResourceServer resourceServer = authorization.getStoreFactory().getResourceServerStore().findByClient(client);
             Policy policy = null;
 
             while (iterator.hasNext()) {
                 String id = iterator.next();
 
                 if (!id.contains(":")) {
-                    policy = policyStore.findById(id, client.getId());
+                    policy = policyStore.findById(resourceServer, id);
                     iterator.remove();
                     break;
                 }
@@ -819,7 +813,7 @@ public class AccountFormService extends AbstractSecuredLocalService {
                 }
             } else {
                 for (String id : ids) {
-                    scopesToKeep.add(authorization.getStoreFactory().getScopeStore().findById(id.split(":")[1], client.getId()));
+                    scopesToKeep.add(authorization.getStoreFactory().getScopeStore().findById(resourceServer, id.split(":")[1]));
                 }
 
                 for (Scope scope : policy.getScopes()) {
@@ -837,18 +831,18 @@ public class AccountFormService extends AbstractSecuredLocalService {
                 policyStore.delete(policy.getId());
             }
         } else {
-            Map<String, String> filters = new HashMap<>();
+            Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-            filters.put(PermissionTicket.RESOURCE, resource.getId());
-            filters.put(PermissionTicket.REQUESTER, session.users().getUserByUsername(realm, requester).getId());
+            filters.put(PermissionTicket.FilterOption.RESOURCE_ID, resource.getId());
+            filters.put(PermissionTicket.FilterOption.REQUESTER, session.users().getUserByUsername(realm, requester).getId());
 
             if (isRevoke) {
-                filters.put(PermissionTicket.GRANTED, Boolean.TRUE.toString());
+                filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.TRUE.toString());
             } else {
-                filters.put(PermissionTicket.GRANTED, Boolean.FALSE.toString());
+                filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.FALSE.toString());
             }
 
-            List<PermissionTicket> tickets = ticketStore.find(filters, resource.getResourceServer(), -1, -1);
+            List<PermissionTicket> tickets = ticketStore.find(resource.getResourceServer(), filters, null, null);
             Iterator<PermissionTicket> iterator = tickets.iterator();
 
             while (iterator.hasNext()) {
@@ -903,8 +897,9 @@ public class AccountFormService extends AbstractSecuredLocalService {
 
         AuthorizationProvider authorization = session.getProvider(AuthorizationProvider.class);
         PermissionTicketStore ticketStore = authorization.getStoreFactory().getPermissionTicketStore();
-        Resource resource = authorization.getStoreFactory().getResourceStore().findById(resourceId, null);
-        ResourceServer resourceServer = authorization.getStoreFactory().getResourceServerStore().findById(resource.getResourceServer());
+        ScopeStore scopeStore = authorization.getStoreFactory().getScopeStore();
+        Resource resource = authorization.getStoreFactory().getResourceStore().findById(null, resourceId);
+        ResourceServer resourceServer = resource.getResourceServer();
 
         if (resource == null) {
             return ErrorResponse.error("Invalid resource", Response.Status.BAD_REQUEST);
@@ -931,44 +926,45 @@ public class AccountFormService extends AbstractSecuredLocalService {
                 return account.setError(Status.BAD_REQUEST, Messages.INVALID_USER).createResponse(AccountPages.RESOURCE_DETAIL);
             }
 
-            Map<String, String> filters = new HashMap<>();
+            Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-            filters.put(PermissionTicket.RESOURCE, resource.getId());
-            filters.put(PermissionTicket.OWNER, auth.getUser().getId());
-            filters.put(PermissionTicket.REQUESTER, user.getId());
+            filters.put(PermissionTicket.FilterOption.RESOURCE_ID, resource.getId());
+            filters.put(PermissionTicket.FilterOption.OWNER, auth.getUser().getId());
+            filters.put(PermissionTicket.FilterOption.REQUESTER, user.getId());
 
-            List<PermissionTicket> tickets = ticketStore.find(filters, resource.getResourceServer(), -1, -1);
+            List<PermissionTicket> tickets = ticketStore.find(resourceServer, filters, null, null);
+            final String userId = user.getId();
 
             if (tickets.isEmpty()) {
                 if (scopes != null && scopes.length > 0) {
-                    for (String scope : scopes) {
-                        PermissionTicket ticket = ticketStore.create(resourceId, scope, user.getId(), resourceServer);
+                    for (String scopeId : scopes) {
+                        Scope scope = scopeStore.findById(resourceServer, scopeId);
+                        PermissionTicket ticket = ticketStore.create(resourceServer, resource, scope, userId);
                         ticket.setGrantedTimestamp(System.currentTimeMillis());
                     }
                 } else {
                     if (resource.getScopes().isEmpty()) {
-                        PermissionTicket ticket = ticketStore.create(resourceId, null, user.getId(), resourceServer);
+                        PermissionTicket ticket = ticketStore.create(resourceServer, resource, null, userId);
                         ticket.setGrantedTimestamp(System.currentTimeMillis());
                     } else {
                         for (Scope scope : resource.getScopes()) {
-                            PermissionTicket ticket = ticketStore.create(resourceId, scope.getId(), user.getId(), resourceServer);
+                            PermissionTicket ticket = ticketStore.create(resourceServer, resource, scope, userId);
                             ticket.setGrantedTimestamp(System.currentTimeMillis());
                         }
                     }
                 }
             } else if (scopes != null && scopes.length > 0) {
                 List<String> grantScopes = new ArrayList<>(Arrays.asList(scopes));
+                Set<String> alreadyGrantedScopes = tickets.stream()
+                        .map(PermissionTicket::getScope)
+                        .map(Scope::getId)
+                        .collect(Collectors.toSet());
 
-                for (PermissionTicket ticket : tickets) {
-                    Scope scope = ticket.getScope();
+                grantScopes.removeIf(alreadyGrantedScopes::contains);
 
-                    if (scope != null) {
-                        grantScopes.remove(scope.getId());
-                    }
-                }
-
-                for (String grantScope : grantScopes) {
-                    PermissionTicket ticket = ticketStore.create(resourceId, grantScope, user.getId(), resourceServer);
+                for (String scopeId : grantScopes) {
+                    Scope scope = scopeStore.findById(resourceServer, scopeId);
+                    PermissionTicket ticket = ticketStore.create(resourceServer, resource, scope, userId);
                     ticket.setGrantedTimestamp(System.currentTimeMillis());
                 }
             }
@@ -997,24 +993,24 @@ public class AccountFormService extends AbstractSecuredLocalService {
         }
 
         for (String resourceId : resourceIds) {
-            Resource resource = authorization.getStoreFactory().getResourceStore().findById(resourceId, null);
+            Resource resource = authorization.getStoreFactory().getResourceStore().findById(null, resourceId);
 
             if (resource == null) {
                 return ErrorResponse.error("Invalid resource", Response.Status.BAD_REQUEST);
             }
 
-            HashMap<String, String> filters = new HashMap<>();
+            Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
-            filters.put(PermissionTicket.REQUESTER, auth.getUser().getId());
-            filters.put(PermissionTicket.RESOURCE, resource.getId());
+            filters.put(PermissionTicket.FilterOption.REQUESTER, auth.getUser().getId());
+            filters.put(PermissionTicket.FilterOption.RESOURCE_ID, resource.getId());
 
             if ("cancel".equals(action)) {
-                filters.put(PermissionTicket.GRANTED, Boolean.TRUE.toString());
+                filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.TRUE.toString());
             } else if ("cancelRequest".equals(action)) {
-                filters.put(PermissionTicket.GRANTED, Boolean.FALSE.toString());
+                filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.FALSE.toString());
             }
 
-            for (PermissionTicket ticket : ticketStore.find(filters, resource.getResourceServer(), -1, -1)) {
+            for (PermissionTicket ticket : ticketStore.find(resource.getResourceServer(), filters, null, null)) {
                 ticketStore.delete(ticket.getId());
             }
         }

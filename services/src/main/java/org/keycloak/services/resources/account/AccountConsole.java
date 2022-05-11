@@ -2,6 +2,7 @@ package org.keycloak.services.resources.account;
 
 import org.jboss.logging.Logger;
 import org.jboss.resteasy.annotations.cache.NoCache;
+import org.keycloak.common.Profile;
 import org.keycloak.authentication.requiredactions.DeleteAccount;
 import org.keycloak.common.Version;
 import org.keycloak.events.EventStoreProvider;
@@ -114,6 +115,7 @@ public class AccountConsole {
             Locale locale = session.getContext().resolveLocale(user);
             map.put("locale", locale.toLanguageTag());
             Properties messages = theme.getMessages(locale);
+            messages.putAll(realm.getRealmLocalizationTextsByLocale(locale.toLanguageTag()));
             map.put("msg", new MessageFormatterMethod(locale, messages));
             map.put("msgJSON", messagesToJsonString(messages));
             map.put("supportedLocales", supportedLocales(messages));
@@ -129,7 +131,7 @@ public class AccountConsole {
 
             EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
             map.put("isEventsEnabled", eventStore != null && realm.isEventsEnabled());
-            map.put("isAuthorizationEnabled", true);
+            map.put("isAuthorizationEnabled", Profile.isFeatureEnabled(Profile.Feature.AUTHORIZATION));
             
             boolean isTotpConfigured = false;
             boolean deleteAccountAllowed = false;
@@ -167,10 +169,11 @@ public class AccountConsole {
     }
     
     private String convertPropValue(String propertyValue) {
-        propertyValue = propertyValue.replace("''", "%27");
-        propertyValue = propertyValue.replace("'", "%27");
-        propertyValue = propertyValue.replace("\"", "%22");
-        
+        // this mimics the behavior of java.text.MessageFormat used for the freemarker templates:
+        // To print a single quote one needs to write two single quotes.
+        // Single quotes will be stripped.
+        // Usually single quotes would escape parameters, but this not implemented here.
+        propertyValue = propertyValue.replaceAll("'('?)", "$1");
         propertyValue = putJavaParamsInNgTranslateFormat(propertyValue);
 
         return propertyValue;

@@ -124,7 +124,7 @@ public interface GroupProvider extends Provider, GroupLookupProvider {
     Long getGroupsCount(RealmModel realm, Boolean onlyTopGroups);
 
     /**
-     * Returns number of groups with the given string in name for the given realm.
+     * Returns the number of top level groups containing groups with the given string in name for the given realm.
      *
      * @param realm Realm.
      * @param search Case insensitive string which will be searched for.
@@ -287,12 +287,4 @@ public interface GroupProvider extends Provider, GroupLookupProvider {
      * @throws ModelDuplicateException If there is already a top level group name with the same name
      */
     void addTopLevelGroup(RealmModel realm, GroupModel subGroup);
-
-    /**
-     * This function is called when a role is removed; this serves for removing references from groups to roles.
-     *
-     * @param realm Realm.
-     * @param role Role which will be removed.
-     */
-    void preRemove(RealmModel realm, RoleModel role);
 }
